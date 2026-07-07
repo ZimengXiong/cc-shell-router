@@ -1,0 +1,234 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+FISH_CONFIG_DIR=${XDG_CONFIG_HOME:-"$HOME/.config"}/fish
+ZSH_CONFIG_DIR=${XDG_CONFIG_HOME:-"$HOME/.config"}/codex-shell-router
+ZSH_RC=${ZDOTDIR:-"$HOME"}/.zshrc
+ZSH_SOURCE_LINE=". \"$ZSH_CONFIG_DIR/codex-shell-router.zsh\""
+ZSH_BLOCK_START="# >>> codex-shell-router >>>"
+ZSH_BLOCK_END="# <<< codex-shell-router <<<"
+FISH_FILES="
+$FISH_CONFIG_DIR/conf.d/codex-shell-router.fish
+$FISH_CONFIG_DIR/conf.d/codex-shell-router-agent.fish
+$FISH_CONFIG_DIR/functions/__codex_shell_router_execute.fish
+$FISH_CONFIG_DIR/functions/__codex_shell_router_should_route.fish
+"
+INSTALL_AGENT=codex
+
+usage() {
+    cat <<'USAGE'
+Usage: codex-shell-router <command>
+
+Commands:
+  install [codex|claude|pi]  Install the Enter-key router, auto-detects shell if omitted
+  install [fish|zsh] [codex|claude|pi]
+  uninstall [fish|zsh]    Remove installed router files
+  status [fish|zsh]       Show install status
+  test [fish|zsh] TEXT    Print whether TEXT would route to codex
+
+After fish install, open a new Fish shell or run:
+  source ~/.config/fish/conf.d/codex-shell-router.fish
+
+After zsh install, open a new zsh shell or run:
+  source ~/.zshrc
+USAGE
+}
+
+install_fish_router() {
+    install -d "$FISH_CONFIG_DIR/conf.d" "$FISH_CONFIG_DIR/functions"
+    install -m 0644 "$ROOT/fish/conf.d/codex-shell-router.fish" "${FISH_CONFIG_DIR}/conf.d/"
+    install -m 0644 "$ROOT/fish/functions/"*.fish "${FISH_CONFIG_DIR}/functions/"
+    printf 'set -g codex_shell_router_agent %s\n' "$INSTALL_AGENT" > "$FISH_CONFIG_DIR/conf.d/codex-shell-router-agent.fish"
+
+    echo "Installed codex-shell-router for Fish using $INSTALL_AGENT."
+    echo "Open a new Fish shell, or run: source $FISH_CONFIG_DIR/conf.d/codex-shell-router.fish"
+}
+
+uninstall_fish_router() {
+    printf '%s\n' "$FISH_FILES" | while IFS= read -r file; do
+        test -n "$file" && rm -f "$file"
+    done
+    echo "Removed codex-shell-router Fish files."
+    echo "Open a new Fish shell to clear the Enter binding from the current session."
+}
+
+status_fish_router() {
+    status_file "conf.d" "$FISH_CONFIG_DIR/conf.d/codex-shell-router.fish"
+    status_file "execute function" "$FISH_CONFIG_DIR/functions/__codex_shell_router_execute.fish"
+    status_file "routing function" "$FISH_CONFIG_DIR/functions/__codex_shell_router_should_route.fish"
+}
+
+test_fish_router() {
+    if ! command -v fish >/dev/null 2>&1; then
+        echo "fish is not installed or not on PATH" >&2
+        return 1
+    fi
+
+    CODEX_SHELL_ROUTER_TEST_LINE=$* fish -c '
+        source "$argv[2]"
+        if __codex_shell_router_should_route "$CODEX_SHELL_ROUTER_TEST_LINE"
+            echo route
+        else
+            echo skip
+        end
+    ' fish "$ROOT/fish/functions/__codex_shell_router_should_route.fish"
+}
+
+install_zsh_router() {
+    install -d "$ZSH_CONFIG_DIR"
+    install -m 0644 "$ROOT/zsh/codex-shell-router.zsh" "$ZSH_CONFIG_DIR/codex-shell-router.zsh"
+    remove_zshrc_block
+
+    {
+        printf '\n%s\n' "$ZSH_BLOCK_START"
+        printf 'codex_shell_router_agent=%s\n' "$INSTALL_AGENT"
+        printf '%s\n' "$ZSH_SOURCE_LINE"
+        printf '%s\n' "$ZSH_BLOCK_END"
+    } >> "$ZSH_RC"
+
+    echo "Installed codex-shell-router for zsh using $INSTALL_AGENT."
+    echo "Open a new zsh shell, or run: source $ZSH_RC"
+}
+
+uninstall_zsh_router() {
+    rm -f "$ZSH_CONFIG_DIR/codex-shell-router.zsh"
+    remove_zshrc_block
+
+    echo "Removed codex-shell-router zsh files."
+    echo "Open a new zsh shell to clear the Enter binding from the current session."
+}
+
+status_zsh_router() {
+    status_file "script" "$ZSH_CONFIG_DIR/codex-shell-router.zsh"
+    if test -f "$ZSH_RC" && grep -F "$ZSH_SOURCE_LINE" "$ZSH_RC" >/dev/null 2>&1; then
+        echo ".zshrc: installed"
+    else
+        echo ".zshrc: missing"
+    fi
+}
+
+status_file() {
+    if test -f "$2"; then
+        echo "$1: installed"
+    else
+        echo "$1: missing"
+    fi
+}
+
+remove_zshrc_block() {
+    test -f "$ZSH_RC" && grep -F "$ZSH_BLOCK_START" "$ZSH_RC" >/dev/null 2>&1 || return 0
+
+    tmp=${TMPDIR:-/tmp}/codex-shell-router-zshrc.$$
+    awk -v start="$ZSH_BLOCK_START" -v end="$ZSH_BLOCK_END" '
+        $0 == start { skipping = 1; next }
+        $0 == end { skipping = 0; next }
+        !skipping { print }
+    ' "$ZSH_RC" > "$tmp"
+    mv "$tmp" "$ZSH_RC"
+}
+
+test_zsh_router() {
+    if ! command -v zsh >/dev/null 2>&1; then
+        echo "zsh is not installed or not on PATH" >&2
+        return 1
+    fi
+
+    CODEX_SHELL_ROUTER_TEST_LINE=$* zsh -fc '
+        source "$1"
+        if __codex_shell_router_should_route "$CODEX_SHELL_ROUTER_TEST_LINE"; then
+            echo route
+        else
+            echo skip
+        fi
+    ' zsh "$ROOT/zsh/codex-shell-router.zsh"
+}
+
+shell_arg() {
+    case "${1:-}" in
+        fish|zsh)
+            printf '%s\n' "$1"
+            ;;
+        "")
+            detected_shell=${SHELL##*/}
+            case "$detected_shell" in
+                fish|zsh)
+                    printf '%s\n' "$detected_shell"
+                    ;;
+                *)
+                    echo "Could not auto-detect fish or zsh from SHELL=$SHELL" >&2
+            echo "Pass the shell explicitly: codex-shell-router install fish|zsh" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+        *)
+            echo "Unknown shell: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
+agent_arg() {
+    case "${1:-codex}" in
+        codex|claude|pi)
+            printf '%s\n' "$1"
+            ;;
+        *)
+            echo "Unknown agent: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
+install_args() {
+    case "${1:-}" in
+        fish|zsh)
+            shell=$(shell_arg "$1")
+            INSTALL_AGENT=$(agent_arg "${2:-codex}")
+            ;;
+        codex|claude|pi|"")
+            shell=$(shell_arg "")
+            INSTALL_AGENT=$(agent_arg "${1:-codex}")
+            ;;
+        *)
+            echo "Unknown install target: $1" >&2
+            exit 2
+            ;;
+    esac
+}
+
+cmd=${1:-help}
+case "$cmd" in
+    install)
+        shift || true
+        install_args "${1:-}" "${2:-}"
+        "install_${shell}_router"
+        ;;
+    uninstall|status)
+        shift || true
+        shell=$(shell_arg "${1:-}")
+        "${cmd}_${shell}_router"
+        ;;
+    test)
+        shift
+        shell=fish
+        if test "${1:-}" = fish || test "${1:-}" = zsh; then
+            shell=$1
+            shift
+        fi
+        if test "$#" -eq 0; then
+            echo "codex-shell-router test requires text" >&2
+            exit 2
+        fi
+        "test_${shell}_router" "$@"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: $cmd" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
