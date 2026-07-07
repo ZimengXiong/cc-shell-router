@@ -1,5 +1,7 @@
 ## type directly into {zsh, fish} without launching CC
 
+https://github.com/user-attachments/assets/e2ba2b1b-c285-4545-9888-10a2a4251c65
+
 lazy asf? have your agent install:
 ```
 setup gh/zimengxiong/cc-shell-router
